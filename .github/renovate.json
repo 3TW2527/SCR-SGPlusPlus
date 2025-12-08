@@ -3,5 +3,5 @@
   "extends": [
     "config:base"
   ],
-  "updateNotScheduled": false
+  "enabled": false
 }
