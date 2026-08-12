@@ -140,42 +140,8 @@ def calculate_bbox(rect: tuple) -> tuple[int, int, int, int]:
 @check_able_to_run
 def click_rollback() -> None:
     logging.debug("called")
-    mousex, mousey = mouse.get_position()
-    mouse.click("left")
-    sleep_frames(2)
-    if scan_for_dialog("exitcamera"):
-        logging.debug("scan_for_dialog(exitcamera) returned true")
-        return
-    result, image = scan_for_dialog("signal", mousex, mousey)
-    if result:
-        logging.debug("scan_for_dialog(signal) returned true, pressing enter")
-        press_and_release("enter")
-    else:
-        logging.debug("return path")
-        return
-    logging.debug("click_rollback: execute main body outside if-elif path")
-    window = win32gui.GetForegroundWindow()
-    rect = win32gui.GetClientRect(window)
+    click_signal("r")
 
-    x, y, window_width, window_height = calculate_bbox(rect)
-    zone_screen_height, zone_screen_width, zone_screen_x, zone_screen_y = calculate_zone_screen(
-        window_width, window_height
-    )
-
-    rollback_x_edge = int(zone_screen_width * 0.795 + zone_screen_x)
-    rollback_x = int(zone_screen_width * 0.80 + zone_screen_x)
-    rollback_y = int(0.69518 * window_height)
-    rollback_edge_position = win32gui.ClientToScreen(window, (rollback_x_edge, rollback_y))
-    rollback_position = win32gui.ClientToScreen(window, (rollback_x, rollback_y))
-    move_mouse(x=rollback_edge_position[0], y=rollback_position[1], speed=0)
-    move_mouse(x=rollback_position[0], y=rollback_position[1], speed=2)
-
-    mouse.click("left")
-    sleep_frames(1)
-    press_and_release("backspace")
-    press_and_release("backspace")
-    move_mouse(mousex, mousey, speed=0)
-    return
 
 
 @check_able_to_run
