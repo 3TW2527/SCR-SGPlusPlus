@@ -11,6 +11,7 @@ SG++ (SG Plus Plus) is a Python macro script for Stepford County Railway (SCR) t
 - **High-DPI Per-Monitor Awareness**: Native rendering and scaling support for 4K / High-DPI displays without screen offset bugs.
 - **Zones 1-10 & Unlimited Shortcut Messages**: Legacy lettered zones (A-G) are deprecated in favor of numbered Zones 1-10. An expandable table allows adding an indefinite number of custom shortcut messages.
 - **Quit Camera View Hotkey**: Dedicated hotkey (default `X`) to quit camera view by clicking the top-bar cross and simulating Backspace.
+- **Direct Rollback Toggle**: Simplified Rollback toggle (`R`) to use direct aspect selection behavior matching updated in-game SCR signal dialog keybinds.
 - **Horizontally Centered Status Indicator**: Cleanly centered SG+/SG- screen overlay.
 - **Issue #79 Resolution**: Fixed `NameError` crash when status indicator overlay is disabled.
 

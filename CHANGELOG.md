@@ -13,6 +13,9 @@ All notable changes to the SG++ project will be documented in this file.
 - **Customizable Shortcut Messages System**: Replaced deprecated lettered zones A-G with default Zones 1-10 and an expandable GUI table supporting an indefinite number of custom shortcut messages.
 - **Clear Settings Window vs App Exit Buttons**: Clarified GUI footer buttons (`Close Settings` vs `Exit Entire App`).
 
+### Changed
+- **Direct Rollback Toggle Behavior**: Updated `click_rollback()` to use direct signal aspect selection behavior (`click_signal("r")`) matching updated in-game SCR signal dialog keybinds, replacing the legacy side-menu navigation.
+
 ### Fixed
 - **Issue #79 Fix**: Resolved `NameError: name 'label' is not defined` exception when toggling the macro with status indicator overlay disabled.
 - **Screen Overlay Centering**: Fixed `move_text_pos()` to measure window dimensions dynamically and center the SG+/SG- indicator box horizontally.
