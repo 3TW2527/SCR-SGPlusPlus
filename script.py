@@ -1,11 +1,10 @@
 # Made by ElectricityMachine
-# Version: 0.5.1
-# Major changes: Status indicator, config file
+# Version: 0.6.0
+# Major changes: GUI Config Manager, DPI Awareness, Deprecated Zones A-G in favor of 1-10 & customizable Shortcut Messages, Fixed Issue #79, Added Quit Camera View Keybind
 # Description: A script to automate tasks when signalling for SCR
-# Keybinds: 1 2 3 for Danger, Caution, and Proceed signal settings. C for Camera. R for Rollback Toggle.
-# How to use: Hover over a signal and press the corresponding keybind to perform the action
 # Limitations: Windows only, only works on primary monitor
 
+import ctypes
 import logging
 import math
 import sys
@@ -14,7 +13,15 @@ import time
 import winsound
 from collections.abc import Callable
 from typing import Any
-from update_checker import coerce
+
+# Enable High-DPI Per-Monitor Awareness on Windows before creating GUI or Tkinter windows
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 import tkinter as tk
 
@@ -24,19 +31,21 @@ import pyperclip
 import tomli_w
 import tomllib
 import win32gui
-from keyboard import add_hotkey, press_and_release
-from keyboard import wait as keyboard_wait
+from keyboard import add_hotkey, press_and_release, unhook_all
 from mss import mss
 from numpy import array as np_array
 from PIL.Image import Image, frombytes
 
 import autoit
 from constants import VERSION, Colors
-from update_checker import check_for_updates
+from update_checker import check_for_updates, coerce
 
 config = None
 enabled = True
+disabled_reason = None
 signal_mouse_coords: tuple[int, int]
+root: tk.Tk | None = None
+label: tk.Label | None = None
 
 logging.basicConfig(
     stream=sys.stdout,
@@ -45,17 +54,7 @@ logging.basicConfig(
 
 
 def screen_grab(x: int, y: int, width: int, height: int):
-    """Return a screenshot of the user's screen given some bounding box
-
-    Args:
-        x (int): x-coordinate
-        y (int): y-coordinate
-        width (int): width of the screengrab
-        height (int): height of the screengrab
-
-    Returns:
-        Image: PIL-compatible Image in RGB format
-    """
+    """Return a screenshot of the user's screen given some bounding box"""
     with mss() as sct:
         left = x
         top = y
@@ -70,27 +69,47 @@ def move_mouse(x: int, y: int, speed: int = 1):
     autoit.mouse_move(x, y, speed)
 
 
-def update_label(text, colour):
-    label.config(text=text, fg="white", bg="green" if enabled else "red")
+def update_label(text, colour="white"):
+    global label, root, enabled, config
+    if not config or not config.get("enable_status_indicator"):
+        return
+
+    def _do_update():
+        if "label" in globals() and label is not None:
+            try:
+                label.config(text=text, fg=colour, bg="green" if enabled else "red")
+                if root:
+                    move_text_pos(root)
+            except Exception as e:
+                logging.debug(f"update_label exception: {e}")
+
+    if root:
+        try:
+            root.after(0, _do_update)
+        except Exception:
+            _do_update()
 
 
 def move_text_pos(window):
+    if not window:
+        return
+    window.update_idletasks()
     screen_width = window.winfo_screenwidth()
     screen_height = window.winfo_screenheight()
-    window.update_idletasks()
-    window_width = window.winfo_width()
-    window_height = window.winfo_height()
+    window_width = window.winfo_reqwidth()
+    window_height = window.winfo_reqheight()
     x_position = (screen_width - window_width) // 2
     y_position = int(screen_height * 0.04)
     window.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
 
 
-def create_update_label(root):
-    global label
+def create_update_label(root_window):
+    global label, root
+    root = root_window
     root.overrideredirect(True)
     root.attributes("-alpha", 0.85)
     root.attributes("-topmost", True)
-    label = tk.Label(root, text="SG+", bg="green", fg="white", font=("Consolas", 24))
+    label = tk.Label(root, text="SG+", bg="green", fg="white", font=("Consolas", 24), padx=15, pady=5)
     label.pack(fill="both", expand=True)
     move_text_pos(root)
 
@@ -143,10 +162,9 @@ def click_rollback() -> None:
     click_signal("r")
 
 
-
 @check_able_to_run
 def toggle_signal_sidemenu() -> None:
-    logging.debug("\n\n\n\n\n\ncalled")
+    logging.debug("called")
     mousex, mousey = mouse.get_position()
     window = win32gui.GetForegroundWindow()
     rect = win32gui.GetClientRect(window)
@@ -157,7 +175,6 @@ def toggle_signal_sidemenu() -> None:
         press_and_release("backspace")
         press_and_release("backspace")
         return
-    logging.debug("after return")
     mouse.click("left")
     sleep_frames(2)
     result, image = scan_for_dialog("signal", mousex, mousey)
@@ -183,7 +200,6 @@ def click_camera() -> None:
         if signal_mouse_coords:
             move_mouse(signal_mouse_coords[0], signal_mouse_coords[1], speed=1)
         return
-    logging.debug("exitcamera dialog not found, executing main body")
     signal_mouse_coords = mouse.get_position()
     mouse.click("left")
     sleep_frames(2)
@@ -201,22 +217,15 @@ def click_camera() -> None:
         press_and_release("enter")
         sleep_frames(2)
         result = find_camera_buttons(h, w, window)
-        logging.debug(f"result is {result}")
         if result is False:
-            logging.debug("returning because result is False, no dialog found")
             return
         camera_y = 0.80137 if result == 1 else 0.92133
-        x = "lower number" if camera_y == 0.80137 else "upper number"
-        logging.debug(f"uncontrolled scan_for_dialog true in click_camera with x-value of {x}")
     else:
-        logging.debug("return none path in click_camera")
         return
-    logging.debug("outside if-elif path")
     window = win32gui.GetForegroundWindow()
     rect = win32gui.GetClientRect(window)
 
     x, y, w, h = calculate_bbox(rect)
-
     zone_screen_height, zone_screen_width, zone_screen_x, zone_screen_y = calculate_zone_screen(w, h)
 
     camera_x_edge = int(zone_screen_width * 0.795 + zone_screen_x)
@@ -229,6 +238,37 @@ def click_camera() -> None:
     move_mouse(x=camera_position[0], y=camera_position[1], speed=2)
     mouse.click("left")
     return
+
+
+@check_able_to_run
+def exit_camera_view() -> None:
+    """Simulate clicking the X button on the screen to quit camera view followed by Backspace"""
+    logging.debug("called")
+    window = win32gui.GetForegroundWindow()
+    if win32gui.GetWindowText(window) != "Roblox":
+        return
+    rect = win32gui.GetClientRect(window)
+    x, y, w, h = calculate_bbox(rect)
+
+    # Click position: relative offset from center line and top of client area
+    exit_camera_button_x = int(x + (w / 2) + config.get("camera_exit_x_offset", 150))
+    exit_camera_button_y = int(y + config.get("camera_exit_y_offset", 160))
+
+    screen_cords = win32gui.ClientToScreen(window, (exit_camera_button_x, exit_camera_button_y))
+    logging.debug(f"Exit Camera click target screen coords: {screen_cords}")
+
+    current_pos = mouse.get_position()
+    move_mouse(screen_cords[0], screen_cords[1], speed=1)
+    mouse.click("left")
+    move_mouse(current_pos[0], current_pos[1], speed=1)
+    sleep_frames(2)
+    press_and_release("backspace")
+
+
+
+
+
+
 
 
 def calculate_zone_screen(window_width: int, window_height: int) -> tuple[int, int, int, int]:
@@ -248,13 +288,9 @@ def toggle_disable(reason: str) -> None:
     beep = threading.Thread(target=lambda: winsound.Beep(500, 100) if enabled else winsound.Beep(400, 100))
     beep.start()
 
-    if config["enable_status_indicator"]:
+    if config and config.get("enable_status_indicator"):
         update_label("SG+" if enabled else "SG-", "white")
     disabled_reason = reason
-
-
-# TODO: Swap variables "h, w" for "w, h" for readability
-# TODO: Get rid of this function to reduce abstraction
 
 
 def scan_for_dialog(
@@ -267,8 +303,6 @@ def scan_for_dialog(
     rect = win32gui.GetClientRect(window)
 
     bbox = (rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1])
-    _x = bbox[0]
-    _y = bbox[1]
     w = bbox[2]
     h = bbox[3]
     if type == "exitcamera":
@@ -284,7 +318,6 @@ def scan_for_dialog(
 
 
 def find_uncontrolled_sig_dialog(h: int, w: int, mousex: int, mousey: int, dialogbox_image=None) -> bool:
-    logging.debug("called")
     capture = dialogbox_image or capture_dialogbox(w, h, mousex, mousey)
 
     capture_width, capture_height = capture.size
@@ -296,11 +329,8 @@ def find_uncontrolled_sig_dialog(h: int, w: int, mousex: int, mousey: int, dialo
 
     imagesToProcess = [lower, upper]
     for image in imagesToProcess:
-        logging.debug("iterating images")
         if check_color_percentage_single(image, Colors.COLOR_DIALOG_WHITE, compareThreshold=10):
-            logging.debug("image loop: numpy white pixels returned success")
             return True
-    logging.debug("return false path")
     return False
 
 
@@ -326,7 +356,6 @@ def capture_dialogbox(w: int, h: int, mousex: int, mousey: int):
 
 
 def find_controlled_sig_dialog(w: int, h: int, mousex: int, mousey: int) -> tuple[bool, Image]:
-    logging.debug("called")
     capture = capture_dialogbox(w, h, mousex, mousey)
 
     w, h = capture.size
@@ -337,19 +366,15 @@ def find_controlled_sig_dialog(w: int, h: int, mousex: int, mousey: int) -> tupl
     lowershelf = lower.crop((0, height * 0.66, width, height * 0.66 + 3))
     uppershelf = upper.crop((0, upperh * 0.4, upperw, upperh * 0.4 + 2))
     imagesToProcess = [lowershelf, uppershelf]
-    logging.debug("made it to generator")
     result = any(
         check_color_percentage_single(image, Colors.COLOR_DIALOG_WHITE, threshold=0.01)
         and check_color_multiple(image, Colors.COLOR_DIALOG_BUTTONS)
         for image in imagesToProcess
-    )  # this doesn't run if check for white pixels is false. must change TODO
-    logging.debug(f"result: {result}")
-
+    )
     return result, capture
 
 
 def find_camera_buttons(h: int, w: int, windowID: int):
-    logging.debug("called")
     zone_screen_height, zone_screen_width, zone_screen_x, zone_screen_y = calculate_zone_screen(w, h)
 
     camerabutton_height = math.ceil(h * 0.125 * 0.375)
@@ -371,16 +396,11 @@ def find_camera_buttons(h: int, w: int, windowID: int):
     imagesToProcess = [uppershelf, lowershelf]
     for image in imagesToProcess:
         if check_color_multiple(image, Colors.COLOR_VIEWCAMERA):
-            logging.debug(
-                f"View camera button found. We got {0 if image==imagesToProcess[0] else 1} (0=upper, 1=lower)"
-            )
             return 0 if image is lowershelf else 1
-    logging.debug("none found")
     return False
 
 
 def find_exit_cam_button(w: int, bbox: tuple[int, int, int, int], window):
-    logging.debug("called")
     camera_controls_width = 283
     camera_controls_x = math.ceil(w / 2 - camera_controls_width / 2)
 
@@ -401,105 +421,62 @@ def find_exit_cam_button(w: int, bbox: tuple[int, int, int, int], window):
     width, height = capture.size
     lowershelf = capture.crop((0, height / 2, width, height / 2 + 2))
     imagesToProcess = [lowershelf]
-
     return all(check_color_single(image, Colors.COLOR_CAMERA_EXIT) for image in imagesToProcess)
 
 
 def color_approx_eq_np(
     inputColor: tuple[int, int, int], colorToCompare: tuple[int, int, int], threshold: int = 5
 ) -> bool:
-    """Check if a color is equal to another color within a given value
-
-    Args:
-        inputColor (tuple): First RGB color to check against
-        colorToCompare (tuple): Second RGB color to check against
-        threshold (int, optional): How many units of R, G, or B to tolerate. Defaults to 5.
-
-    Returns:
-        bool: Whether or not the colors are approximately equal to each other
-    """
-    # Calculate the absolute difference between each color component
     diff = [abs(c1 - c2) for c1, c2 in zip(inputColor, colorToCompare)]
-
-    # Check if the maximum difference is within the threshold
     return max(diff) <= threshold
 
 
 def check_color_single(image: Image, color: tuple[int, int, int], threshold: int = 7) -> bool:
-    start_time = time.perf_counter()
-    logging.debug("called")
     arr = np_array(image)
-
-    # Iterate over the y-axis
     for i in range(arr.shape[0]):
-        # Iterate over the x-axis
         for j in range(arr.shape[1]):
             col_to_compare = arr[i, j]
             if color_approx_eq_np(col_to_compare, color, threshold):
-                logging.debug("colors similar, return True")
-                logging.debug(f"Time taken was {time.perf_counter() - start_time}")
                 return True
-    logging.debug("no similar colors found, returning False")
     return False
 
 
 def check_color_multiple(image: Image, colors: list[tuple[int, int, int]], threshold: int = 7) -> bool:
-    logging.debug("called")
     arr = np_array(image)
-
-    # Iterate over the y-axis
     for i in range(arr.shape[0]):
-        # Iterate over the x-axis
         for j in range(arr.shape[1]):
-            # Get the tuple from the element
             col_to_compare = arr[i, j]
             for color in colors:
                 if color_approx_eq_np(col_to_compare, color, threshold):
-                    logging.debug("colors similar, return True")
                     return True
-    logging.debug("no similar colors found, returning False")
     return False
 
 
 def check_color_percentage_single(
     image: Image, color: tuple[int, int, int], compareThreshold: int = 7, threshold: float = 0.05
 ) -> bool:
-    logging.debug("called")
     matching_pixels = 0
     arr = np_array(image)
-
-    # Iterate over the y-axis
     for i in range(arr.shape[0]):
-        # Iterate over the x-axis
         for j in range(arr.shape[1]):
-            # Get the tuple from the element
             col_to_compare = arr[i, j]
             if color_approx_eq_np(col_to_compare, color, compareThreshold):
                 matching_pixels += 1
             if matching_pixels / arr.size >= threshold:
-                logging.debug(f"matching pixels > {threshold * 10 ** 2}% found")
                 return True
-    logging.debug(f"not enough white pixels found for array size. numpixels: {matching_pixels/arr.size}")
     return False
 
 
 @check_able_to_run
-def send_zone_message(zone: str) -> None:
-    """Copy a Zone opening message to the user's clipboard and sound an audible tone
-
-    Args:
-        zone (str): Which Zone message to copy
-    """
-
+def send_shortcut_message(message: str) -> None:
+    """Copy a shortcut message to the user's clipboard and sound an audible tone"""
     beep = threading.Thread(target=lambda: winsound.Beep(600, 200))
     beep.start()
-
-    pyperclip.copy(config["zone_opening_messages"][zone])
+    pyperclip.copy(message)
 
 
 @check_able_to_run
 def enabled_warning():
-    # Chat key or command bar button was pressed
     """Play a warning sound if script is enabled. Disables script if config option 'auto_disable_on_chat' is set."""
     global enabled
     if enabled and config["auto_disable_on_chat"]:
@@ -515,7 +492,56 @@ def auto_enable_on_enter():
         toggle_disable("CHAT")
 
 
-def init_config() -> None:
+def parse_hotkey(key_val):
+    if isinstance(key_val, int):
+        return key_val
+    if isinstance(key_val, str) and key_val.isdigit():
+        return int(key_val)
+    return str(key_val)
+
+
+def register_all_hotkeys():
+    try:
+        unhook_all()
+    except Exception as e:
+        logging.debug(f"unhook_all exception: {e}")
+
+    if not config:
+        return
+
+    kb = config.get("keybinds", {})
+    if "set_signal_danger" in kb:
+        add_hotkey(parse_hotkey(kb["set_signal_danger"]), lambda: click_signal("1"))
+    if "set_signal_caution" in kb:
+        add_hotkey(parse_hotkey(kb["set_signal_caution"]), lambda: click_signal("2"))
+    if "set_signal_proceed" in kb:
+        add_hotkey(parse_hotkey(kb["set_signal_proceed"]), lambda: click_signal("3"))
+    if "toggle_signal_camera" in kb:
+        add_hotkey(parse_hotkey(kb["toggle_signal_camera"]), lambda: click_camera())
+    if "quit_camera_view" in kb:
+        add_hotkey(parse_hotkey(kb["quit_camera_view"]), lambda: exit_camera_view())
+    if "toggle_macro" in kb:
+        add_hotkey(parse_hotkey(kb["toggle_macro"]), lambda: toggle_disable("F1"))
+    if "toggle_signal_rollback" in kb:
+        add_hotkey(parse_hotkey(kb["toggle_signal_rollback"]), lambda: click_rollback())
+    if "toggle_signal_sidemenu" in kb:
+        add_hotkey(parse_hotkey(kb["toggle_signal_sidemenu"]), lambda: toggle_signal_sidemenu())
+
+    for k in kb.get("warning_keys", []):
+        add_hotkey(k, lambda: enabled_warning())
+
+    if config.get("auto_enable_on_enter"):
+        add_hotkey("enter", lambda: auto_enable_on_enter())
+        add_hotkey("shift+enter", lambda: auto_enable_on_enter())
+
+    for shortcut in config.get("shortcut_messages", []):
+        kb_val = shortcut.get("keybind")
+        msg = shortcut.get("message")
+        if kb_val and msg:
+            add_hotkey(parse_hotkey(kb_val), lambda m=msg: send_shortcut_message(m))
+
+
+def init_config() -> dict:
     default_config = {
         "VERSION_DO_NOT_EDIT": VERSION,
         "onboard_msg": True,
@@ -530,27 +556,24 @@ def init_config() -> None:
             "set_signal_caution": 3,
             "set_signal_proceed": 4,
             "toggle_signal_camera": "C",
+            "quit_camera_view": "X",
             "toggle_macro": "F1",
             "toggle_signal_rollback": "R",
             "toggle_signal_sidemenu": "F",
-            "zone_a_message": 79,
-            "zone_b_message": 80,
-            "zone_c_message": 81,
-            "zone_d_message": 75,
-            "zone_e_message": 76,
-            "zone_f_message": 77,
-            "zone_g_message": 71,
             "warning_keys": ["/", "'", "`"],
         },
-        "zone_opening_messages": {
-            "A": "Zone A (Stepford Area, Willowfield, Whitefield branches) is now under manual signalling control.",
-            "B": "Zone B (St. Helens Bridge, CXY, Beaulieu Park corridor) is now under manual signalling control.",
-            "C": "Zone C (Stepford Airport Area) is now under manual signalling control.",
-            "D": "Zone D (Morganstown to LW) is now under manual signaling control.",
-            "E": "Zone E (Llyn-by-the-Sea to Edgemead) is now under manual signalling control.",
-            "F": "Zone F (Benton area + Waterline up to but not including Airport West and Morganstown) is now under manual signalling control.",
-            "G": "Zone G (James St. to Esterfield) is now under manual signalling control.",
-        },
+        "shortcut_messages": [
+            {"description": "Zone 1 Opening", "keybind": 79, "message": "Zone 1 is now under manual signalling control."},
+            {"description": "Zone 2 Opening", "keybind": 80, "message": "Zone 2 is now under manual signalling control."},
+            {"description": "Zone 3 Opening", "keybind": 81, "message": "Zone 3 is now under manual signalling control."},
+            {"description": "Zone 4 Opening", "keybind": 75, "message": "Zone 4 is now under manual signalling control."},
+            {"description": "Zone 5 Opening", "keybind": 76, "message": "Zone 5 is now under manual signalling control."},
+            {"description": "Zone 6 Opening", "keybind": 77, "message": "Zone 6 is now under manual signalling control."},
+            {"description": "Zone 7 Opening", "keybind": 71, "message": "Zone 7 is now under manual signalling control."},
+            {"description": "Zone 8 Opening", "keybind": 72, "message": "Zone 8 is now under manual signalling control."},
+            {"description": "Zone 9 Opening", "keybind": 73, "message": "Zone 9 is now under manual signalling control."},
+            {"description": "Zone 10 Opening", "keybind": 74, "message": "Zone 10 is now under manual signalling control."},
+        ],
     }
     try:
         with open("config.toml", "rb") as f:
@@ -563,61 +586,61 @@ def init_config() -> None:
 
 
 def migrate_config():
-    try:
-        ver_num = config["VERSION_DO_NOT_EDIT"]
-    except KeyError:
-        ver_num = None
+    global config
+    modified = False
 
-    if not ver_num or (
-        (coerce(ver_num) < coerce(VERSION)) and (coerce(VERSION) < coerce("0.5.0") or coerce(ver_num) < coerce("0.5"))
-    ):
-        # TODO: Write tests for the config migration
-        # Changes made in 0.5:
-        # Fix incorrect numpad keybinds (#55)
-        # Auto disable on chat, re-enable on enter
-        # F key opens sidemenu
-        # Option for status indicator
-        config["keybinds"] = {
-            "set_signal_danger": 2,
-            "set_signal_caution": 3,
-            "set_signal_proceed": 4,
-            "toggle_signal_camera": "C",
-            "toggle_macro": "F1",
-            "toggle_signal_rollback": "R",
-            "toggle_signal_sidemenu": "F",
-            "zone_a_message": 79,
-            "zone_b_message": 80,
-            "zone_c_message": 81,
-            "zone_d_message": 75,
-            "zone_e_message": 76,
-            "zone_f_message": 77,
-            "zone_g_message": 71,
-            "warning_keys": ["/", "'", "`"],
-        }
-        config["auto_disable_on_chat"] = True
-        config["auto_enable_on_enter"] = True
-        config["enable_update_checker"] = True
-        config["enable_status_indicator"] = True
+    if "zone_opening_messages" in config:
+        del config["zone_opening_messages"]
+        modified = True
+
+    kb = config.get("keybinds", {})
+    old_zone_keys = [k for k in kb if k.startswith("zone_")]
+    if old_zone_keys:
+        for k in old_zone_keys:
+            del kb[k]
+        modified = True
+
+    if "quit_camera_view" not in kb:
+        kb["quit_camera_view"] = "X"
+        modified = True
+
+    if "shortcut_messages" not in config:
+        config["shortcut_messages"] = [
+            {"description": "Zone 1 Opening", "keybind": 79, "message": "Zone 1 is now under manual signalling control."},
+            {"description": "Zone 2 Opening", "keybind": 80, "message": "Zone 2 is now under manual signalling control."},
+            {"description": "Zone 3 Opening", "keybind": 81, "message": "Zone 3 is now under manual signalling control."},
+            {"description": "Zone 4 Opening", "keybind": 75, "message": "Zone 4 is now under manual signalling control."},
+            {"description": "Zone 5 Opening", "keybind": 76, "message": "Zone 5 is now under manual signalling control."},
+            {"description": "Zone 6 Opening", "keybind": 77, "message": "Zone 6 is now under manual signalling control."},
+            {"description": "Zone 7 Opening", "keybind": 71, "message": "Zone 7 is now under manual signalling control."},
+            {"description": "Zone 8 Opening", "keybind": 72, "message": "Zone 8 is now under manual signalling control."},
+            {"description": "Zone 9 Opening", "keybind": 73, "message": "Zone 9 is now under manual signalling control."},
+            {"description": "Zone 10 Opening", "keybind": 74, "message": "Zone 10 is now under manual signalling control."},
+        ]
+        modified = True
+
+    if config.get("VERSION_DO_NOT_EDIT") != VERSION:
         config["VERSION_DO_NOT_EDIT"] = VERSION
+        modified = True
+
+    if modified:
         with open("config.toml", "wb") as f:
             tomli_w.dump(config, f)
-        logging.warning(
-            "[CONFIG MIGRATION]: Your keybinds were overriden to fix an issue with the zone opening messages."
-        )
-        logging.warning(
-            "[CONFIG MIGRATION]: This issue was introduced in 0.4.1. More info: https://github.com/ElectricityMachine/SCR-SGPlus/issues/55"
-        )
-        logging.warning("[CONFIG MIGRATION]: Please edit config.toml if you need to. This migration only happens once.")
-        logging.warning(
-            '[CONFIG MIGRATION]: A new feature to disable SG+ when opening the chat box was added. Change `auto_disable_on_chat` to "False" to disable this feature.'
-        )
-        logging.warning(
-            '[CONFIG MIGRATION]: A new feature was added to open the signal sidemenu. Default keybind is "F". To use, hover over a signal and press it. Press again to close.'
-        )
+        logging.info("[CONFIG MIGRATION]: Updated config to latest version structure.")
+
+
+def on_gui_config_saved(new_config):
+    global config, root
+    config = new_config
+    register_all_hotkeys()
+    if config.get("enable_status_indicator"):
+        if root:
+            if not root.winfo_viewable():
+                root.deiconify()
+            update_label("SG+" if enabled else "SG-")
     else:
-        config["VERSION_DO_NOT_EDIT"] = VERSION
-        with open("config.toml", "wb") as f:
-            tomli_w.dump(config, f)
+        if root and root.winfo_viewable():
+            root.withdraw()
 
 
 if __name__ == "__main__":
@@ -627,49 +650,33 @@ if __name__ == "__main__":
         )
     config = init_config()
     migrate_config()
-    log_lvl = logging.DEBUG if config["debug_mode_enabled"] else logging.INFO
+    log_lvl = logging.DEBUG if config.get("debug_mode_enabled") else logging.INFO
     logging.getLogger().setLevel(log_lvl)
 
-    keybinds = config["keybinds"]
-    add_hotkey(keybinds["set_signal_danger"], lambda: click_signal("1"))  # 1
-    add_hotkey(keybinds["set_signal_caution"], lambda: click_signal("2"))  # 2
-    add_hotkey(keybinds["set_signal_proceed"], lambda: click_signal("3"))  # 3
-    add_hotkey(keybinds["toggle_signal_camera"], lambda: click_camera())
-    add_hotkey(keybinds["toggle_macro"], lambda: toggle_disable("F1"))
-    add_hotkey(keybinds["toggle_signal_rollback"], lambda: click_rollback())
-    for i in keybinds["warning_keys"]:
-        add_hotkey(i, lambda: enabled_warning())
-    if config["auto_enable_on_enter"]:
-        add_hotkey("enter", lambda: auto_enable_on_enter())
-        add_hotkey("shift+enter", lambda: auto_enable_on_enter())
-    add_hotkey(keybinds["zone_a_message"], lambda: send_zone_message("A"))  # Num 1
-    add_hotkey(keybinds["zone_b_message"], lambda: send_zone_message("B"))  # Num 2
-    add_hotkey(keybinds["zone_c_message"], lambda: send_zone_message("C"))  # Num 3
-    add_hotkey(keybinds["zone_d_message"], lambda: send_zone_message("D"))  # Num 4
-    add_hotkey(keybinds["zone_e_message"], lambda: send_zone_message("E"))  # Num 5
-    add_hotkey(keybinds["zone_f_message"], lambda: send_zone_message("F"))  # Num 6
-    add_hotkey(keybinds["zone_g_message"], lambda: send_zone_message("G"))  # Num 7
-    add_hotkey(keybinds["toggle_signal_sidemenu"], lambda: toggle_signal_sidemenu())
+    register_all_hotkeys()
 
     colorama.init()
 
-    if config["enable_update_checker"]:
+    if config.get("enable_update_checker"):
         check_for_updates()
     else:
         logging.info("Skipping update check")
     winsound.Beep(500, 200)
     logging.info(f"SG+ {VERSION} Successfully Initialized")
-    logging.info(f"Current FPS: {config["average_fps"]}")
-    if config["onboard_msg"]:
+    logging.info(f"Current FPS: {config.get('average_fps', 30)}")
+    if config.get("onboard_msg"):
         print("Thanks for using my script! If you have an issue, feel free to open an issue on GitHub or DM me")
-        print("Too slow? Increase your average_fps in config.toml. 40 can work well")
+        print("Too slow? Increase your average_fps in config.toml or GUI. 40 can work well")
         print("Script not working/dialog opens without anything happening? Decrease your average_fps")
-        print("Want to change keybinds or zone messages? It's all in the same file!")
-        print("Don't like the status indicator at the top? Same file, under 'enable_status_indicator'")
-        print("To hide this message, change 'onboard_msg' to false in config.toml")
+        print("Want to change keybinds or shortcut messages? Use the GUI window!")
 
-    if config["enable_status_indicator"]:
-        root = tk.Tk()
+    root = tk.Tk()
+    if config.get("enable_status_indicator"):
         create_update_label(root)
-        root.mainloop()
-    keyboard_wait()
+    else:
+        root.withdraw()
+
+    from gui import open_config_window
+    open_config_window(root, config, on_gui_config_saved)
+
+    root.mainloop()

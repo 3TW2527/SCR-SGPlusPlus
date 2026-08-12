@@ -1,4 +1,4 @@
-VERSION = "v0.5.1"
+VERSION = "v0.6.0"
 
 class Colors:
     COLOR_DIALOG_BUTTONS = [
@@ -17,3 +17,4 @@ class Colors:
         (147, 0, 207),  # Non-hovered
         (89, 0, 152),  # Hovered
     ]
+
